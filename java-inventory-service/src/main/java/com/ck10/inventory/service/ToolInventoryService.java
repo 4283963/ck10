@@ -1,6 +1,7 @@
 package com.ck10.inventory.service;
 
 import com.ck10.inventory.entity.ToolInventory;
+import com.ck10.inventory.exception.InsufficientInventoryException;
 import com.ck10.inventory.repository.ToolInventoryRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -34,7 +35,6 @@ public class ToolInventoryService {
         if (toolInventoryRepository.existsByToolModel(inventory.getToolModel())) {
             throw new RuntimeException("刀具型号已存在: " + inventory.getToolModel());
         }
-        inventory.setAvailableQuantity(inventory.getTotalQuantity() - inventory.getReservedQuantity());
         return toolInventoryRepository.save(inventory);
     }
 
@@ -55,77 +55,82 @@ public class ToolInventoryService {
     }
 
     @Transactional
-    public boolean reserveStock(String toolModel, int quantity) {
-        ToolInventory inventory = toolInventoryRepository.findByToolModel(toolModel)
-                .orElseThrow(() -> new RuntimeException("刀具型号不存在: " + toolModel));
+    public void reserveStock(String toolModel, int quantity) {
+        if (quantity <= 0) {
+            throw new IllegalArgumentException("预扣数量必须大于0");
+        }
+
+        int updated = toolInventoryRepository.reserveStock(toolModel, quantity);
         
-        int available = inventory.getTotalQuantity() - inventory.getReservedQuantity();
-        if (available < quantity) {
-            log.warn("库存不足: 型号 {}, 可用 {}, 需要 {}", toolModel, available, quantity);
-            return false;
+        if (updated == 0) {
+            ToolInventory inv = toolInventoryRepository.findByToolModel(toolModel).orElse(null);
+            int available = inv != null ? inv.getTotalQuantity() - inv.getReservedQuantity() : 0;
+            log.warn("库存预扣失败: 型号 {}, 需要 {}, 可用 {}", toolModel, quantity, available);
+            throw new InsufficientInventoryException(toolModel, quantity, available);
         }
         
-        inventory.setReservedQuantity(inventory.getReservedQuantity() + quantity);
-        toolInventoryRepository.save(inventory);
-        
-        log.info("库存预扣成功: 型号 {}, 数量 {}, 剩余可用 {}", 
-                toolModel, quantity, inventory.getAvailableQuantity());
-        return true;
+        log.info("库存预扣成功: 型号 {}, 数量 {}", toolModel, quantity);
     }
 
     @Transactional
-    public boolean releaseReservedStock(String toolModel, int quantity) {
-        ToolInventory inventory = toolInventoryRepository.findByToolModel(toolModel)
-                .orElseThrow(() -> new RuntimeException("刀具型号不存在: " + toolModel));
-        
-        if (inventory.getReservedQuantity() < quantity) {
-            log.warn("预扣库存不足: 型号 {}, 预扣 {}, 释放 {}", 
-                    toolModel, inventory.getReservedQuantity(), quantity);
-            return false;
+    public void releaseReservedStock(String toolModel, int quantity) {
+        if (quantity <= 0) {
+            throw new IllegalArgumentException("释放数量必须大于0");
         }
+
+        int updated = toolInventoryRepository.releaseReservedStock(toolModel, quantity);
         
-        inventory.setReservedQuantity(inventory.getReservedQuantity() - quantity);
-        toolInventoryRepository.save(inventory);
+        if (updated == 0) {
+            ToolInventory inv = toolInventoryRepository.findByToolModel(toolModel).orElse(null);
+            int reserved = inv != null ? inv.getReservedQuantity() : 0;
+            log.warn("预扣库存释放失败: 型号 {}, 释放 {}, 当前预扣 {}", toolModel, quantity, reserved);
+            throw new RuntimeException("预扣库存不足，无法释放");
+        }
         
         log.info("预扣库存释放: 型号 {}, 数量 {}", toolModel, quantity);
-        return true;
     }
 
     @Transactional
-    public boolean consumeStock(String toolModel, int quantity) {
-        ToolInventory inventory = toolInventoryRepository.findByToolModel(toolModel)
-                .orElseThrow(() -> new RuntimeException("刀具型号不存在: " + toolModel));
+    public void consumeStock(String toolModel, int quantity) {
+        if (quantity <= 0) {
+            throw new IllegalArgumentException("消耗数量必须大于0");
+        }
+
+        int updated = toolInventoryRepository.consumeStock(toolModel, quantity);
         
-        if (inventory.getReservedQuantity() < quantity) {
-            log.warn("预扣库存不足，无法消耗: 型号 {}, 预扣 {}, 消耗 {}", 
-                    toolModel, inventory.getReservedQuantity(), quantity);
-            return false;
+        if (updated == 0) {
+            ToolInventory inv = toolInventoryRepository.findByToolModel(toolModel).orElse(null);
+            int reserved = inv != null ? inv.getReservedQuantity() : 0;
+            log.warn("库存消耗失败: 型号 {}, 消耗 {}, 预扣 {}", toolModel, quantity, reserved);
+            throw new RuntimeException("预扣库存不足，无法消耗");
         }
         
-        inventory.setTotalQuantity(inventory.getTotalQuantity() - quantity);
-        inventory.setReservedQuantity(inventory.getReservedQuantity() - quantity);
-        toolInventoryRepository.save(inventory);
-        
-        log.info("库存消耗完成: 型号 {}, 数量 {}, 剩余库存 {}", 
-                toolModel, quantity, inventory.getTotalQuantity());
-        return true;
+        log.info("库存消耗完成: 型号 {}, 数量 {}", toolModel, quantity);
     }
 
     @Transactional
     public void addStock(String toolModel, int quantity) {
-        ToolInventory inventory = toolInventoryRepository.findByToolModel(toolModel)
-                .orElseThrow(() -> new RuntimeException("刀具型号不存在: " + toolModel));
+        if (quantity <= 0) {
+            throw new IllegalArgumentException("补货数量必须大于0");
+        }
+
+        int updated = toolInventoryRepository.addStock(toolModel, quantity);
         
-        inventory.setTotalQuantity(inventory.getTotalQuantity() + quantity);
-        toolInventoryRepository.save(inventory);
+        if (updated == 0) {
+            throw new RuntimeException("刀具型号不存在: " + toolModel);
+        }
         
-        log.info("库存补充: 型号 {}, 数量 {}, 总库存 {}", 
-                toolModel, quantity, inventory.getTotalQuantity());
+        ToolInventory inv = toolInventoryRepository.findByToolModel(toolModel).orElse(null);
+        int total = inv != null ? inv.getTotalQuantity() : 0;
+        log.info("库存补充: 型号 {}, 数量 {}, 总库存 {}", toolModel, quantity, total);
     }
 
     public boolean isLowStock(String toolModel) {
         return toolInventoryRepository.findByToolModel(toolModel)
-                .map(inv -> inv.getAvailableQuantity() <= inv.getMinStockLevel())
+                .map(inv -> {
+                    int available = inv.getTotalQuantity() - inv.getReservedQuantity();
+                    return available <= inv.getMinStockLevel();
+                })
                 .orElse(false);
     }
 }

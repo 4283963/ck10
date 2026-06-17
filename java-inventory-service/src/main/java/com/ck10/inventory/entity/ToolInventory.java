@@ -3,6 +3,7 @@ package com.ck10.inventory.entity;
 import jakarta.persistence.*;
 import lombok.Data;
 import org.hibernate.annotations.CreationTimestamp;
+import org.hibernate.annotations.Formula;
 import org.hibernate.annotations.UpdateTimestamp;
 
 import java.time.LocalDateTime;
@@ -16,6 +17,10 @@ public class ToolInventory {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
+    @Version
+    @Column(name = "version", nullable = false)
+    private Long version;
+
     @Column(name = "tool_model", nullable = false, unique = true, length = 50)
     private String toolModel;
 
@@ -28,7 +33,7 @@ public class ToolInventory {
     @Column(name = "reserved_quantity", nullable = false)
     private Integer reservedQuantity;
 
-    @Column(name = "available_quantity", nullable = false)
+    @Formula("total_quantity - reserved_quantity")
     private Integer availableQuantity;
 
     @Column(name = "min_stock_level", nullable = false)
@@ -51,11 +56,9 @@ public class ToolInventory {
     @Column(name = "updated_at")
     private LocalDateTime updatedAt;
 
-    @PrePersist
-    @PreUpdate
-    public void updateAvailableQuantity() {
-        if (totalQuantity != null && reservedQuantity != null) {
-            this.availableQuantity = this.totalQuantity - this.reservedQuantity;
-        }
+    @Transient
+    public boolean isAvailable(int quantity) {
+        return totalQuantity != null && reservedQuantity != null
+                && (totalQuantity - reservedQuantity) >= quantity;
     }
 }
