@@ -10,6 +10,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
+import java.util.Map;
 
 @Slf4j
 @RestController
@@ -49,16 +50,22 @@ public class WorkOrderController {
     }
 
     @PostMapping("/life-alert")
-    public ResponseEntity<ApiResponse<WorkOrder>> handleToolLifeAlert(@RequestBody ToolLifeAlertRequest request) {
-        log.info("收到刀具寿命预警通知: toolId={}, model={}, remainingLife={}%",
-                request.getToolId(), request.getToolModel(), request.getRemainingLife());
-        
-        try {
-            WorkOrder workOrder = workOrderService.processToolLifeAlert(request);
-            return ResponseEntity.ok(ApiResponse.success("工单创建成功", workOrder));
-        } catch (RuntimeException e) {
-            log.error("处理刀具寿命预警失败: {}", e.getMessage());
-            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
+    public ResponseEntity<ApiResponse<Map<String, Object>>> handleToolLifeAlert(@RequestBody ToolLifeAlertRequest request) {
+        log.info("收到刀具寿命预警通知: toolId={}, model={}, remainingLife={}%, machineId={}",
+                request.getToolId(), request.getToolModel(), request.getRemainingLife(), request.getMachineId());
+
+        Map<String, Object> result = workOrderService.processToolLifeAlert(request);
+
+        boolean success = Boolean.TRUE.equals(result.get("success"));
+        boolean emergencyStopTriggered = Boolean.TRUE.equals(result.get("emergencyStopTriggered"));
+
+        if (success) {
+            return ResponseEntity.ok(ApiResponse.success("工单创建成功", result));
+        } else if (emergencyStopTriggered) {
+            log.warn("库存不足且刀具危险，已触发生产线熔断: {}", result.get("emergencyStopReason"));
+            return ResponseEntity.ok(ApiResponse.success("库存不足，已触发生产线紧急停机熔断", result));
+        } else {
+            return ResponseEntity.badRequest().body(ApiResponse.error((String) result.get("message")));
         }
     }
 

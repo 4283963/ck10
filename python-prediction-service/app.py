@@ -12,9 +12,17 @@ load_dotenv()
 app = Flask(__name__)
 
 FLASK_HOST = os.getenv('FLASK_HOST', '0.0.0.0')
-FLASK_PORT = int(os.getenv('FLASK_PORT', 5000))
+FLASK_PORT = int(os.getenv('FLASK_PORT', 5002))
 JAVA_SERVICE_URL = os.getenv('JAVA_INVENTORY_SERVICE_URL', 'http://localhost:8080')
 LOW_LIFE_THRESHOLD = float(os.getenv('LOW_LIFE_THRESHOLD', 15))
+CRITICAL_LIFE_THRESHOLD = float(os.getenv('CRITICAL_LIFE_THRESHOLD', 5))
+
+machines = {
+    'CNC-001': {'machine_id': 'CNC-001', 'name': 'CNC车削中心-01', 'status': 'running', 'status_updated_at': None, 'emergency_reason': None},
+    'CNC-002': {'machine_id': 'CNC-002', 'name': 'CNC车削中心-02', 'status': 'running', 'status_updated_at': None, 'emergency_reason': None},
+    'CNC-003': {'machine_id': 'CNC-003', 'name': 'CNC车削中心-03', 'status': 'running', 'status_updated_at': None, 'emergency_reason': None},
+    'CNC-004': {'machine_id': 'CNC-004', 'name': 'CNC铣削中心-01', 'status': 'running', 'status_updated_at': None, 'emergency_reason': None}
+}
 
 cutting_tools = {
     'TOOL-001': {'tool_id': 'TOOL-001', 'model': 'CNMG-120408', 'machine_id': 'CNC-001', 'remaining_life': 100.0, 'total_usage_hours': 0.0, 'status': 'active', 'notified': False},
@@ -73,7 +81,7 @@ def predict_remaining_life(sensor_data, tool_info):
     return round(remaining_life, 2)
 
 
-def notify_inventory_service(tool_id, remaining_life, tool_model):
+def notify_inventory_service(tool_id, remaining_life, tool_model, machine_id):
     try:
         url = f"{JAVA_SERVICE_URL}/api/work-orders/life-alert"
         payload = {
@@ -81,6 +89,7 @@ def notify_inventory_service(tool_id, remaining_life, tool_model):
             'toolModel': tool_model,
             'remainingLife': remaining_life,
             'threshold': LOW_LIFE_THRESHOLD,
+            'machineId': machine_id,
             'timestamp': datetime.now().isoformat()
         }
         headers = {'Content-Type': 'application/json'}
@@ -89,19 +98,23 @@ def notify_inventory_service(tool_id, remaining_life, tool_model):
         
         if response.status_code == 200:
             app.logger.info(f"通知库存服务成功: 刀具 {tool_id} 寿命 {remaining_life}%")
-            return True
+            return True, response.json()
         else:
             app.logger.error(f"通知库存服务失败: HTTP {response.status_code} - {response.text}")
-            return False
+            return False, None
     except Exception as e:
         app.logger.error(f"通知库存服务异常: {str(e)}")
-        return False
+        return False, None
 
 
 def data_collection_loop():
     while True:
         for tool_id, tool_info in cutting_tools.items():
             if tool_info['status'] != 'active':
+                continue
+            
+            machine = machines.get(tool_info['machine_id'])
+            if machine and machine['status'] == 'emergency_stop':
                 continue
             
             sensor_data = read_machine_sensor_data(tool_id)
@@ -122,12 +135,85 @@ def data_collection_loop():
                 prediction_history.pop(0)
             
             if remaining_life < LOW_LIFE_THRESHOLD and not tool_info['notified']:
-                notified = notify_inventory_service(tool_id, remaining_life, tool_info['model'])
+                notified, resp = notify_inventory_service(tool_id, remaining_life, tool_info['model'], tool_info['machine_id'])
                 if notified:
                     tool_info['notified'] = True
                     tool_info['status'] = 'pending_replacement'
+                    
+                    if resp and resp.get('data') and resp['data'].get('emergencyStopTriggered'):
+                        app.logger.warning(f"生产线熔断已触发: 机床 {tool_info['machine_id']} 已紧急停机")
         
         time.sleep(2)
+
+
+@app.route('/api/machines', methods=['GET'])
+def get_all_machines():
+    return jsonify({
+        'success': True,
+        'data': list(machines.values()),
+        'timestamp': datetime.now().isoformat()
+    })
+
+
+@app.route('/api/machines/<machine_id>', methods=['GET'])
+def get_machine(machine_id):
+    machine = machines.get(machine_id)
+    if not machine:
+        return jsonify({'success': False, 'message': '机床不存在'}), 404
+    return jsonify({'success': True, 'data': machine})
+
+
+@app.route('/api/machines/<machine_id>/emergency-stop', methods=['POST'])
+def trigger_emergency_stop(machine_id):
+    machine = machines.get(machine_id)
+    if not machine:
+        return jsonify({'success': False, 'message': '机床不存在'}), 404
+    
+    data = request.get_json(silent=True) or {}
+    reason = data.get('reason', '库存耗尽且刀具寿命危险，系统自动熔断')
+    triggered_by = data.get('triggeredBy', 'system')
+    
+    machine['status'] = 'emergency_stop'
+    machine['status_updated_at'] = datetime.now().isoformat()
+    machine['emergency_reason'] = reason
+    
+    for tool_id, tool_info in cutting_tools.items():
+        if tool_info['machine_id'] == machine_id:
+            tool_info['status'] = 'machine_stopped'
+    
+    app.logger.critical(f"【紧急停机】机床 {machine_id} 已熔断停机，原因: {reason}，触发者: {triggered_by}")
+    
+    return jsonify({
+        'success': True,
+        'message': f'机床 {machine_id} 已触发紧急停机',
+        'data': machine
+    })
+
+
+@app.route('/api/machines/<machine_id>/resume', methods=['POST'])
+def resume_machine(machine_id):
+    machine = machines.get(machine_id)
+    if not machine:
+        return jsonify({'success': False, 'message': '机床不存在'}), 404
+    
+    if machine['status'] != 'emergency_stop':
+        return jsonify({'success': False, 'message': '机床未处于紧急停机状态'}), 400
+    
+    machine['status'] = 'running'
+    machine['status_updated_at'] = datetime.now().isoformat()
+    machine['emergency_reason'] = None
+    
+    for tool_id, tool_info in cutting_tools.items():
+        if tool_info['machine_id'] == machine_id and tool_info['status'] == 'machine_stopped':
+            tool_info['status'] = 'active'
+    
+    app.logger.info(f"机床 {machine_id} 已恢复运行")
+    
+    return jsonify({
+        'success': True,
+        'message': f'机床 {machine_id} 已恢复运行',
+        'data': machine
+    })
 
 
 @app.route('/api/tools', methods=['GET'])
@@ -163,7 +249,9 @@ def get_tool_prediction(tool_id):
             'sensor_data': sensor_data,
             'predicted_remaining_life': remaining_life,
             'needs_replacement': remaining_life < LOW_LIFE_THRESHOLD,
-            'threshold': LOW_LIFE_THRESHOLD
+            'critical_state': remaining_life < CRITICAL_LIFE_THRESHOLD,
+            'threshold': LOW_LIFE_THRESHOLD,
+            'critical_threshold': CRITICAL_LIFE_THRESHOLD
         }
     })
 
@@ -204,12 +292,15 @@ def get_prediction_history():
 
 @app.route('/api/health', methods=['GET'])
 def health_check():
+    emergency_count = sum(1 for m in machines.values() if m['status'] == 'emergency_stop')
     return jsonify({
         'status': 'healthy',
         'service': 'prediction-service',
         'timestamp': datetime.now().isoformat(),
         'low_life_threshold': LOW_LIFE_THRESHOLD,
-        'java_service_url': JAVA_SERVICE_URL
+        'critical_life_threshold': CRITICAL_LIFE_THRESHOLD,
+        'java_service_url': JAVA_SERVICE_URL,
+        'emergency_stopped_machines': emergency_count
     })
 
 
@@ -219,7 +310,7 @@ def manual_notify(tool_id):
     if not tool:
         return jsonify({'success': False, 'message': '刀具不存在'}), 404
     
-    notified = notify_inventory_service(tool_id, tool['remaining_life'], tool['model'])
+    notified, resp = notify_inventory_service(tool_id, tool['remaining_life'], tool['model'], tool['machine_id'])
     
     return jsonify({
         'success': notified,
@@ -227,7 +318,8 @@ def manual_notify(tool_id):
         'data': {
             'tool_id': tool_id,
             'remaining_life': tool['remaining_life'],
-            'notified': notified
+            'notified': notified,
+            'response': resp
         }
     })
 
@@ -237,5 +329,6 @@ if __name__ == '__main__':
     data_thread.start()
     app.logger.info("数据采集线程已启动")
     app.logger.info(f"刀具寿命预警阈值: {LOW_LIFE_THRESHOLD}%")
+    app.logger.info(f"刀具危险阈值: {CRITICAL_LIFE_THRESHOLD}%")
     app.logger.info(f"库存服务地址: {JAVA_SERVICE_URL}")
     app.run(host=FLASK_HOST, port=FLASK_PORT, debug=False)

@@ -3,6 +3,7 @@ package com.ck10.inventory.service;
 import com.ck10.inventory.dto.ToolLifeAlertRequest;
 import com.ck10.inventory.entity.WorkOrder;
 import com.ck10.inventory.exception.DuplicateWorkOrderException;
+import com.ck10.inventory.exception.InsufficientInventoryException;
 import com.ck10.inventory.repository.WorkOrderRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -12,7 +13,9 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -23,8 +26,10 @@ public class WorkOrderService {
 
     private final WorkOrderRepository workOrderRepository;
     private final ToolInventoryService toolInventoryService;
+    private final MachineToolService machineToolService;
 
     private final AtomicInteger orderCounter = new AtomicInteger(0);
+    private static final double CRITICAL_LIFE_THRESHOLD = 5.0;
 
     public List<WorkOrder> getAllOrders() {
         return workOrderRepository.findAll();
@@ -47,12 +52,53 @@ public class WorkOrderService {
     }
 
     @Transactional(rollbackFor = Exception.class)
-    public WorkOrder processToolLifeAlert(ToolLifeAlertRequest request) {
-        log.info("收到刀具寿命预警: 刀具ID={}, 型号={}, 剩余寿命={}%, 阈值={}%",
+    public Map<String, Object> processToolLifeAlert(ToolLifeAlertRequest request) {
+        log.info("收到刀具寿命预警: 刀具ID={}, 型号={}, 剩余寿命={}%, 阈值={}%, 机床={}",
                 request.getToolId(), request.getToolModel(),
-                request.getRemainingLife(), request.getThreshold());
+                request.getRemainingLife(), request.getThreshold(), request.getMachineId());
 
-        toolInventoryService.reserveStock(request.getToolModel(), 1);
+        Map<String, Object> result = new HashMap<>();
+
+        boolean reserved = toolInventoryService.tryReserveStock(request.getToolModel(), 1);
+
+        if (!reserved) {
+            log.warn("库存预扣失败: 型号 {} - 检查是否需要触发生产线熔断", request.getToolModel());
+
+            boolean isCritical = request.getRemainingLife() != null
+                    && request.getRemainingLife() < CRITICAL_LIFE_THRESHOLD;
+            boolean hasMachineId = request.getMachineId() != null
+                    && !request.getMachineId().isBlank();
+            boolean emergencyStopTriggered = false;
+            String emergencyStopReason = null;
+
+            if (isCritical && hasMachineId) {
+                log.error("【极度危险】刀具 {} 剩余寿命 {}% < 5%，且库存已耗尽！触发生产线熔断！",
+                        request.getToolId(), request.getRemainingLife());
+
+                emergencyStopReason = String.format("刀具型号 %s 库存已耗尽，当前刀具 %s 剩余寿命 %.2f%% < 5%%，系统自动触发紧急停机",
+                        request.getToolModel(), request.getToolId(), request.getRemainingLife());
+
+                emergencyStopTriggered = machineToolService.triggerEmergencyStopInNewTransaction(
+                        request.getMachineId(), emergencyStopReason, "system_fuse");
+
+                if (emergencyStopTriggered) {
+                    log.warn("生产线熔断已触发，机床 {} 已紧急停机", request.getMachineId());
+                } else {
+                    log.error("生产线熔断触发失败！机床 {} 状态未更新", request.getMachineId());
+                }
+            }
+
+            result.put("success", false);
+            result.put("emergencyStopTriggered", emergencyStopTriggered);
+            result.put("emergencyStopReason", emergencyStopReason);
+            result.put("remainingLife", request.getRemainingLife());
+            result.put("criticalThreshold", CRITICAL_LIFE_THRESHOLD);
+            result.put("availableQuantity", toolInventoryService.getAvailableQuantity(request.getToolModel()));
+            result.put("requiredQuantity", 1);
+            result.put("message", "库存不足，无法创建工单" + (emergencyStopTriggered ? "，已触发紧急停机" : ""));
+            return result;
+        }
+
         log.debug("库存预扣成功: 型号 {}", request.getToolModel());
 
         boolean exists = workOrderRepository.existsByToolIdAndStatusAndOrderType(
@@ -62,6 +108,7 @@ public class WorkOrderService {
         );
         if (exists) {
             log.warn("刀具 {} 已有待处理的更换工单，事务回滚", request.getToolId());
+            toolInventoryService.releaseReservedStock(request.getToolModel(), 1);
             throw new DuplicateWorkOrderException(request.getToolId());
         }
 
@@ -69,6 +116,7 @@ public class WorkOrderService {
         workOrder.setOrderNo(generateOrderNo());
         workOrder.setToolId(request.getToolId());
         workOrder.setToolModel(request.getToolModel());
+        workOrder.setMachineId(request.getMachineId());
         workOrder.setOrderType(WorkOrder.OrderType.TOOL_REPLACEMENT);
         workOrder.setStatus(WorkOrder.OrderStatus.PENDING);
 
@@ -96,7 +144,10 @@ public class WorkOrderService {
             log.warn("刀具型号 {} 库存已低于安全线，建议补货", request.getToolModel());
         }
 
-        return saved;
+        result.put("success", true);
+        result.put("workOrder", saved);
+        result.put("emergencyStopTriggered", false);
+        return result;
     }
 
     @Transactional(rollbackFor = Exception.class)

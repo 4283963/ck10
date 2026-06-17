@@ -37,59 +37,47 @@ public class ToolInventoryController {
 
     @PostMapping
     public ResponseEntity<ApiResponse<ToolInventory>> createInventory(@RequestBody ToolInventory inventory) {
-        try {
-            ToolInventory created = toolInventoryService.createInventory(inventory);
-            return ResponseEntity.ok(ApiResponse.success("创建成功", created));
-        } catch (RuntimeException e) {
-            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
-        }
+        ToolInventory created = toolInventoryService.createInventory(inventory);
+        return ResponseEntity.ok(ApiResponse.success("创建成功", created));
     }
 
     @PutMapping("/{id}")
     public ResponseEntity<ApiResponse<ToolInventory>> updateInventory(
             @PathVariable Long id,
             @RequestBody ToolInventory inventory) {
-        try {
-            ToolInventory updated = toolInventoryService.updateInventory(id, inventory);
-            return ResponseEntity.ok(ApiResponse.success("更新成功", updated));
-        } catch (RuntimeException e) {
-            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
-        }
+        ToolInventory updated = toolInventoryService.updateInventory(id, inventory);
+        return ResponseEntity.ok(ApiResponse.success("更新成功", updated));
     }
 
     @PostMapping("/{toolModel}/reserve")
     public ResponseEntity<ApiResponse<Void>> reserveStock(
             @PathVariable String toolModel,
             @RequestParam(defaultValue = "1") int quantity) {
-        boolean success = toolInventoryService.reserveStock(toolModel, quantity);
-        if (success) {
-            return ResponseEntity.ok(ApiResponse.success("预扣成功", null));
-        } else {
-            return ResponseEntity.badRequest().body(ApiResponse.error("库存不足"));
-        }
+        toolInventoryService.reserveStock(toolModel, quantity);
+        return ResponseEntity.ok(ApiResponse.success("预扣成功", null));
+    }
+
+    @PostMapping("/{toolModel}/release")
+    public ResponseEntity<ApiResponse<Void>> releaseReservedStock(
+            @PathVariable String toolModel,
+            @RequestParam(defaultValue = "1") int quantity) {
+        toolInventoryService.releaseReservedStock(toolModel, quantity);
+        return ResponseEntity.ok(ApiResponse.success("释放成功", null));
     }
 
     @PostMapping("/{toolModel}/consume")
     public ResponseEntity<ApiResponse<Void>> consumeStock(
             @PathVariable String toolModel,
             @RequestParam(defaultValue = "1") int quantity) {
-        boolean success = toolInventoryService.consumeStock(toolModel, quantity);
-        if (success) {
-            return ResponseEntity.ok(ApiResponse.success("消耗成功", null));
-        } else {
-            return ResponseEntity.badRequest().body(ApiResponse.error("消耗失败，预扣库存不足"));
-        }
+        toolInventoryService.consumeStock(toolModel, quantity);
+        return ResponseEntity.ok(ApiResponse.success("消耗成功", null));
     }
 
     @PostMapping("/{toolModel}/add")
     public ResponseEntity<ApiResponse<Void>> addStock(
             @PathVariable String toolModel,
             @RequestParam(defaultValue = "1") int quantity) {
-        try {
-            toolInventoryService.addStock(toolModel, quantity);
-            return ResponseEntity.ok(ApiResponse.success("补货成功", null));
-        } catch (RuntimeException e) {
-            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
-        }
+        toolInventoryService.addStock(toolModel, quantity);
+        return ResponseEntity.ok(ApiResponse.success("补货成功", null));
     }
 }

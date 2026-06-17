@@ -18,6 +18,9 @@ public class ToolLifeAlertRequest {
     @JsonProperty("threshold")
     private Double threshold;
 
+    @JsonProperty("machineId")
+    private String machineId;
+
     @JsonProperty("timestamp")
     private String timestamp;
 }

@@ -1,6 +1,8 @@
 package com.ck10.inventory.config;
 
+import com.ck10.inventory.entity.MachineTool;
 import com.ck10.inventory.entity.ToolInventory;
+import com.ck10.inventory.service.MachineToolService;
 import com.ck10.inventory.service.ToolInventoryService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -13,9 +15,15 @@ import org.springframework.stereotype.Component;
 public class DataInitializer implements CommandLineRunner {
 
     private final ToolInventoryService toolInventoryService;
+    private final MachineToolService machineToolService;
 
     @Override
     public void run(String... args) {
+        initToolInventory();
+        initMachines();
+    }
+
+    private void initToolInventory() {
         log.info("开始初始化刀具库存数据...");
 
         if (toolInventoryService.getAllInventory().isEmpty()) {
@@ -34,13 +42,27 @@ public class DataInitializer implements CommandLineRunner {
         }
     }
 
+    private void initMachines() {
+        log.info("开始初始化机床数据...");
+
+        if (machineToolService.getAllMachines().isEmpty()) {
+            createMachine("CNC-001", "CNC车削中心-01", "一车间", "CK6150");
+            createMachine("CNC-002", "CNC车削中心-02", "一车间", "CK6150");
+            createMachine("CNC-003", "CNC车削中心-03", "二车间", "CK6163");
+            createMachine("CNC-004", "CNC铣削中心-01", "二车间", "VMC850");
+
+            log.info("机床数据初始化完成，共导入 {} 台", machineToolService.getAllMachines().size());
+        } else {
+            log.info("机床数据已存在，跳过初始化");
+        }
+    }
+
     private void createToolInventory(String model, String name, int total, int minStock, String unit, String spec) {
         ToolInventory inventory = new ToolInventory();
         inventory.setToolModel(model);
         inventory.setToolName(name);
         inventory.setTotalQuantity(total);
         inventory.setReservedQuantity(0);
-        inventory.setAvailableQuantity(total);
         inventory.setMinStockLevel(minStock);
         inventory.setUnit(unit);
         inventory.setSpecification(spec);
@@ -48,5 +70,17 @@ public class DataInitializer implements CommandLineRunner {
         
         toolInventoryService.createInventory(inventory);
         log.info("创建库存: {} - {}, 数量: {}", model, name, total);
+    }
+
+    private void createMachine(String machineId, String name, String workshop, String model) {
+        MachineTool machine = new MachineTool();
+        machine.setMachineId(machineId);
+        machine.setName(name);
+        machine.setWorkshop(workshop);
+        machine.setModel(model);
+        machine.setStatus(MachineTool.MachineStatus.RUNNING);
+
+        machineToolService.createMachine(machine);
+        log.info("创建机床: {} - {}", machineId, name);
     }
 }
